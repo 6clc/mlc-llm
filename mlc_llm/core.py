@@ -590,6 +590,7 @@ def mod_transform_before_build(
         patterns = []
 
         has_cutlass = tvm.get_global_func("relax.ext.cutlass", True)
+        print("use cutlass: ", has_cutlass)
 
         if has_cutlass and not args.no_cutlass_attn:
             # pylint: disable=no-value-for-parameter
@@ -609,8 +610,10 @@ def mod_transform_before_build(
 
         if has_cublas and args.quantization.name in ("q0f16", "q0f32") and not args.no_cublas:
             patterns += get_patterns_with_prefix("cublas")
+        print("use cublas: ", has_cublas)
 
         if len(patterns) > 0:
+            print("patterns more than 1 ")
             os.makedirs("./tmp", exist_ok=True)
 
             major, minor = parse_compute_version(tvm.cuda(0).compute_version)
@@ -636,7 +639,9 @@ def mod_transform_before_build(
                 ]
             )(mod)
 
+    print("before fused transpose matmul: ", mod)
     mod = mlc_llm.transform.FuseTransposeMatmul()(mod)
+    print("after fused transpose matmul: ", mod)
     mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-parameter
     mod = mlc_llm.transform.FuseDecodeMatmulEwise()(mod)
     mod = mlc_llm.transform.FuseDecodeTake()(mod)
@@ -810,6 +815,7 @@ def build_model_from_args(args: argparse.Namespace):
         mod, param_manager, params, model_config = model_generators[args.model_category].get_model(
             args, config
         )
+        # print(mod)
 
         if args.model_category == "mistral":
             args.sliding_window = model_config.sliding_window
@@ -887,7 +893,9 @@ def build_model_from_args(args: argparse.Namespace):
         if args.convert_weights_only:
             exit(0)
 
+        print("mod_transform_before_build: ", mod)
         mod = mod_transform_before_build(mod, param_manager, args, model_config)
+        print("mod_transform_before_build2: ", mod)
         if args.num_shards > 1:
             # We require a "create_sharding_info" function for all
             # multi-GPU models, even if they are using pre-sharded

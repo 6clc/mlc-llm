@@ -795,6 +795,7 @@ class LLMChat {
   void PrefillStep(std::string inp, bool append_conversation = true, bool decode_next_token = true,
                    PlaceInPrompt place_in_prompt = PlaceInPrompt::kAll,
                    String generation_config_str = "") {
+    // 6clc: not in here
     if (ft_.embed_func_.defined() && ft_.prefill_with_embed_func_.defined()) {
       // Temporarily placed inside `PrefillStep` for compatibility in transition.
       // Will be separated out in the future.
@@ -805,21 +806,29 @@ class LLMChat {
         LOG(FATAL)
             << "NotImplementedError: Sliding window attention does not support separate embedding";
       }
+      LOG(INFO) << "PrefillWithEmbedStep";
       NDArray embedding = Downcast<NDArray>(
           EmbedStep(inp, append_conversation, place_in_prompt, generation_config_str));
       PrefillWithEmbedStep(embedding, decode_next_token, generation_config_str);
       return;
     }
+    LOG(INFO) << "6clc: generation_config";
 
     picojson::object generation_config =
         this->LoadGenerationConfigFromString(generation_config_str);
 
+    LOG(INFO) << "6clc: PrepareBeforeEmbedding";
     std::vector<int32_t> prompt_tokens =
         this->PrepareBeforeEmbedding(inp, append_conversation, place_in_prompt, generation_config);
+    for (const auto& token : prompt_tokens) {
+      LOG(INFO) << "6clc: input token " << std::to_string(token);
+    }
     int64_t token_len = static_cast<int64_t>(prompt_tokens.size());
+    LOG(INFO) << "6clc: input token len " << token_len;
     if (token_len == 0) return;
     if (ft_.use_disco) {
       // exclude load shard time from prefill
+      LOG(INFO) << "6clc: use disco";
       this->ft_.sess->SyncWorker(0);
     }
     auto tstart = std::chrono::high_resolution_clock::now();
@@ -827,6 +836,7 @@ class LLMChat {
     int32_t new_seq_len = total_seq_len_;
     NDArray logits_on_device;
     if (this->sliding_window_ != -1) {
+      LOG(INFO) << "6clc: sliding window";
       // Use chunking if we use sliding window attention (see Mistral paper figure 3).
       for (int64_t begin = 0; begin < token_len; begin += this->sliding_window_chunk_size_) {
         int64_t end = std::min(token_len, begin + this->sliding_window_chunk_size_);
@@ -838,12 +848,15 @@ class LLMChat {
       ICHECK_EQ(new_seq_len, total_seq_len_ + token_len) << "Expect chunking process all tokens";
     } else {
       // Otherwise, prefill entire prompt at once.
+      LOG(INFO) << "6clc: not sliding window "
+                << "new_seq_len:=  " << new_seq_len;
       new_seq_len += token_len;
       logits_on_device = this->ForwardTokens(prompt_tokens, new_seq_len);
     }
     total_seq_len_ = new_seq_len;
 
     if (!decode_next_token) {
+      LOG(INFO) << "6clc: !decode_next_token";
       auto tend = std::chrono::high_resolution_clock::now();
       this->prefill_total_time += static_cast<double>((tend - tstart).count()) / 1e9;
       this->prefill_total_tokens += token_len;
@@ -856,6 +869,7 @@ class LLMChat {
 
     this->prefill_total_time += static_cast<double>((tend - tstart).count()) / 1e9;
     this->prefill_total_tokens += token_len;
+    LOG(INFO) << "6clc: ProcessNextToken";
     this->ProcessNextToken(next_token, generation_config);
   }
 
@@ -1147,8 +1161,10 @@ class LLMChat {
         appeared_token_freq_[next_token] = 1;
       }
     }
+    LOG(INFO) << "6clc: ProcessNextToken";
 
     output_message_ = tokenizer_->Decode(output_ids_);
+    LOG(INFO) << "6clc: ProcessNextToken " << output_message_;
 
     size_t stop_pos = std::string::npos;
     for (const std::string& stop_str : gen_stop_strs) {
@@ -1191,12 +1207,16 @@ class LLMChat {
   // run forward compute
   NDArray ForwardTokens(std::vector<int32_t> input_tokens, int64_t cur_pos) {
     ObjectRef ret{nullptr};
+    LOG(INFO) << "6clc: ForwardTokens prefill_func_.defined: " << ft_.prefill_func_.defined();
     if (input_tokens.size() > 1 && ft_.prefill_func_.defined()) {
+      LOG(INFO) << "prefill_func_";
       ObjectRef input_data = ft_.CopyToWorker0(this->GetInputTokenNDArray(input_tokens));
       ShapeTuple cur_pos_shape = ShapeTuple({cur_pos});
       if (sliding_window_ == -1) {
+        LOG(INFO) << "prefill_func_.defined(), sliding_window_==-1";
         ret = ft_.prefill_func_(input_data, cur_pos_shape, kv_cache_, params_);
       } else {
+        LOG(INFO) << "prefill_func_.defined(), sliding_window_ != -1";
         // Sliding window attention needs extra shape parameters
         int64_t seq_len = static_cast<int64_t>(input_tokens.size());
         // Number of elements in the cache
@@ -1207,6 +1227,7 @@ class LLMChat {
                                 kv_cache_, params_);
       }
     } else {
+      LOG(INFO) << "6clc:  decode";
       // running decode function when prefill is not available
       for (int i = 0; i < input_tokens.size(); ++i) {
         ObjectRef input_data;
@@ -1220,8 +1241,10 @@ class LLMChat {
         int64_t pos = cur_pos + i + 1 - input_tokens.size();
         ShapeTuple pos_shape = ShapeTuple({pos});
         if (sliding_window_ == -1) {
+          LOG(INFO) << "6clc: sliding_window_ == -1";
           ret = ft_.decode_func_(input_data, pos_shape, kv_cache_, params_);
         } else {
+          LOG(INFO) << "6clc: sliding_window_ != -1";
           // Sliding window attention needs extra shape parameters
           int64_t seq_len = static_cast<int64_t>(input_tokens.size());
           // Number of elements in the cache
@@ -1469,19 +1492,24 @@ class LLMChatModule : public ModuleNode {
         *rv = s;
       });
     } else if (name == "prefill") {
+      LOG(WARNING) << "execute prefill";
       return PackedFunc([this, sptr_to_self](TVMArgs args, TVMRetValue* rv) {
         ICHECK(1 <= args.size() && args.size() <= 4);
         if (args.size() == 1) {
+          LOG(WARNING) << "xxxx ";
           // args: inp (with decode_next_token = true, place_in_prompt = kAll)
           GetChat()->PrefillStep(args[0]);
         } else if (args.size() == 2) {
+          LOG(WARNING) << "xxxx ";
           // args: inp, decode_next_token (with place_in_prompt = kAll)
           GetChat()->PrefillStep(args[0], true, args[1]);
         } else if (args.size() == 3) {
+          LOG(WARNING) << "xxxx ";
           // args: inp, decode_next_token, place_in_prompt
           PlaceInPrompt place_in_prompt = static_cast<PlaceInPrompt>(static_cast<int>(args[2]));
           GetChat()->PrefillStep(args[0], true, args[1], place_in_prompt);
         } else if (args.size() == 4) {
+          LOG(WARNING) << " in here xxxx ";
           // args: inp, decode_next_token, place_in_prompt, generation_config_str
           PlaceInPrompt place_in_prompt = static_cast<PlaceInPrompt>(static_cast<int>(args[2]));
           GetChat()->PrefillStep(args[0], true, args[1], place_in_prompt, args[3]);
@@ -1521,8 +1549,10 @@ class LLMChatModule : public ModuleNode {
       return PackedFunc([this, sptr_to_self](TVMArgs args, TVMRetValue* rv) {
         ICHECK(0 <= args.size() && args.size() <= 1);
         if (args.size() == 0) {
+          LOG(INFO) << "decode args.size()==0";
           GetChat()->DecodeStep();
         } else if (args.size() == 1) {
+          LOG(INFO) << "decode args.size()==1";
           // args: generation_config_str
           GetChat()->DecodeStep(args[0]);
         }
@@ -1577,7 +1607,10 @@ class LLMChatModule : public ModuleNode {
     }
   }
 
-  void Init(DLDevice device) { device_ = device; }
+  void Init(DLDevice device) {
+    LOG(INFO) << "init mlc module";
+    device_ = device;
+  }
 
   LLMChat* GetChat() {
     ICHECK(chat_ != nullptr) << "Chat is not initialized via reload";
@@ -1653,6 +1686,7 @@ TVM_REGISTER_GLOBAL("mlc.get_delta_message").set_body_typed(GetDeltaMessage);
 
 tvm::runtime::Module CreateChatModule(DLDevice device) {
   ObjectPtr<LLMChatModule> n = make_object<LLMChatModule>();
+  LOG(WARNING) << "Create Chat Moudle";
   n->Init(device);
   return Module(n);
 }

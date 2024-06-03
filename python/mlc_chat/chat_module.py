@@ -864,6 +864,7 @@ class ChatModule:  # pylint: disable=too-many-instance-attributes
                 # apply callback with a rate of callback_interval
                 i, new_msg = 0, ""
                 while not self._stopped():
+                    print("chat_module.py " + "self._decode")
                     self._decode(generation_config=generation_config)
                     if i % progress_callback.callback_interval == 0 or self._stopped():
                         new_msg = self._get_message()

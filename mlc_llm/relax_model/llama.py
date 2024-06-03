@@ -1345,12 +1345,14 @@ def get_model(args, hf_config):
         create_embed_func(bb, param_manager, config, args.quantization)
 
     if enable_batching:
+        print("enable batching")
         emit_paged_kv_cache_op(bb, config)
         create_prefill_func_for_batching(bb, param_manager, config, args.quantization)
         create_decoding_func_for_batching(bb, param_manager, config, args.quantization)
         create_paged_kv_cache_func(bb, config)
         create_softmax_func_for_batching(bb, config)
     else:
+        print("single seq")
         create_prefill_func_for_single_seq(bb, param_manager, config, args.quantization, sep_embed)
         create_decoding_func_for_single_seq(bb, param_manager, config, args.quantization)
         create_kv_cache_func(bb, config)
